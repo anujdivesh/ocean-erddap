@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run ERDDAP locally with Docker (development).
 #   ERDDAP:              http://localhost:8080/erddap
-#   Push API:            http://localhost:8080/api   (docs: /api/docs)
+#   Push API:            http://localhost:8080/api   (reference: GET /api, login required)
 #   HTTPS / logins:      https://localhost:8443/erddap  (self-signed cert: accept the browser warning)
 #
 # Settings come from .env (the single config file); only URLs, data directory and

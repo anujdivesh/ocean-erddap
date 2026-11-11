@@ -169,6 +169,8 @@ cmd_up() {
       -p "${BIND}:${API_PORT}:8000" \
       -e PUSH_ADMIN_ROLES="${PUSH_ADMIN_ROLES:-spc}" \
       -e MAX_UPLOAD_MB="${PUSH_MAX_UPLOAD_MB:-500}" \
+      -e CLIENT_IP_HEADER="${PUSH_CLIENT_IP_HEADER:-}" \
+      -e PUBLIC_URL="${PUBLIC_URL}" \
       --log-driver json-file --log-opt max-size=20m --log-opt max-file=5 \
       -v "${ROOT}/erddap/content:/erddap_content:ro" \
       -v "${ROOT}/datasets:/datasets" \

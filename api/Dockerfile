@@ -10,5 +10,6 @@ COPY app ./app
 # reload flags in /erddapData/flag. Override with `docker run --user`.
 USER 1000:1000
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--proxy-headers", "--forwarded-allow-ips", "*"]
+# No --proxy-headers: X-Forwarded-For is client-controlled. The real client IP comes
+# from CLIENT_IP_HEADER (see app/main.py) and the public URL from PUBLIC_URL.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]

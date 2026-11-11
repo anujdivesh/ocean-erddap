@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import ipaddress
 import os
 import re
 import tempfile
@@ -43,6 +44,13 @@ SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
 # Failed logins allowed per client IP within the window before it gets 429 responses.
 LOGIN_FAIL_LIMIT = int(os.environ.get("LOGIN_FAIL_LIMIT", "10"))
 LOGIN_FAIL_WINDOW_S = int(os.environ.get("LOGIN_FAIL_WINDOW_S", "900"))
+# Header holding the real client IP, set by the proxy in front (e.g. "CF-Connecting-IP"
+# behind a Cloudflare Tunnel). Empty = use the TCP peer address. X-Forwarded-For is never
+# trusted: clients can put anything at its start, which would defeat the login limit.
+CLIENT_IP_HEADER = os.environ.get("CLIENT_IP_HEADER", "").strip()
+# Public base URL used in the /api documentation (e.g. https://ocean-erddap.spc.int).
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "").strip().rstrip("/")
+MAX_TRACKED_IPS = 10_000
 UPLOAD_PATH = re.compile(r"^/api/datasets/[^/]+/files/?$")
 MULTIPART_OVERHEAD = 1024 * 1024  # headers/boundaries around the file in a multipart body
 
@@ -50,9 +58,11 @@ app = FastAPI(
     title="ERDDAP Push API",
     description="Upload data files to ERDDAP datasets. Log in with your ERDDAP username/password.",
     version="1.0.0",
-    docs_url="/api/docs",
+    # No public Swagger UI / OpenAPI spec: the endpoint list is only shown to logged-in
+    # users, at GET /api.
+    docs_url=None,
     redoc_url=None,
-    openapi_url="/api/openapi.json",
+    openapi_url=None,
 )
 security = HTTPBasic(realm="ERDDAP Push API")
 
@@ -154,15 +164,29 @@ def _recent_failures(ip: str, now: float) -> deque[float]:
 
 
 def _prune_failures(now: float) -> None:
-    if len(_failures) > 10_000:
-        for ip in [ip for ip, q in _failures.items() if not q or now - q[-1] > LOGIN_FAIL_WINDOW_S]:
-            del _failures[ip]
+    if len(_failures) <= MAX_TRACKED_IPS:
+        return
+    for ip in [ip for ip, q in _failures.items() if not q or now - q[-1] > LOGIN_FAIL_WINDOW_S]:
+        del _failures[ip]
+    # Still too many (flood from many addresses): drop the oldest entries so memory stays bounded.
+    for ip in list(_failures)[: len(_failures) - MAX_TRACKED_IPS]:
+        del _failures[ip]
+
+
+def client_ip(request: Request) -> str:
+    if CLIENT_IP_HEADER:
+        value = request.headers.get(CLIENT_IP_HEADER, "").strip()
+        try:
+            return str(ipaddress.ip_address(value))
+        except ValueError:
+            pass  # header missing/invalid: fall back to the TCP peer
+    return request.client.host if request.client else "unknown"
 
 
 async def verify_credentials(request: Request, creds: HTTPBasicCredentials) -> User:
     """Check Basic credentials against ERDDAP's users, with per-IP brute-force limiting.
     Async so the anti-guessing delay does not tie up a worker thread."""
-    ip = request.client.host if request.client else "unknown"
+    ip = client_ip(request)
     now = time.monotonic()
     failures = _recent_failures(ip, now)
     if len(failures) >= LOGIN_FAIL_LIMIT:
@@ -296,13 +320,13 @@ _EXAMPLES = {
 
 @app.get("/api", tags=["status"], summary="API documentation (this page)")
 @app.get("/api/", include_in_schema=False)
-def api_documentation(request: Request):
+def api_documentation(request: Request, user: User = Depends(current_user)):
     """Complete API reference in one response: authentication, permissions, every endpoint
-    with parameters and a curl example, and error codes. No login required."""
+    with parameters and a curl example, and error codes. Login required."""
     from fastapi.dependencies.utils import get_flat_dependant
     from fastapi.routing import APIRoute
 
-    base = str(request.base_url).rstrip("/")
+    base = PUBLIC_URL or str(request.base_url).rstrip("/")
     endpoints = []
     for route in app.routes:
         if not isinstance(route, APIRoute) or not route.include_in_schema:
@@ -341,8 +365,6 @@ def api_documentation(request: Request):
             "ERDDAP reloads a dataset automatically after every change."
         ),
         "base_url": f"{base}/api",
-        "interactive_docs": f"{base}/api/docs",
-        "openapi_spec": f"{base}/api/openapi.json",
         "authentication": {
             "scheme": "HTTP Basic (curl -u USER:PASSWORD), over HTTPS only",
             "accounts": "Same username/password as the ERDDAP website login "

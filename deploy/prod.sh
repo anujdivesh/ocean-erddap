@@ -23,6 +23,19 @@ die() { echo "ERROR: $*" >&2; exit 1; }
 [ -f "$ENV_FILE" ] || die "missing $ENV_FILE (create it: cp .env.template .env)"
 command -v docker >/dev/null || die "docker is not installed"
 
+# Use docker directly if this user may, otherwise via sudo (user not in the docker group).
+DOCKER_BIN="$(command -v docker)"
+if "$DOCKER_BIN" info >/dev/null 2>&1; then
+  DOCKER=("$DOCKER_BIN")
+elif [ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null; then
+  echo "Note: $(id -un) has no direct Docker access; using sudo." >&2
+  sudo "$DOCKER_BIN" info >/dev/null || die "cannot reach Docker even with sudo (is the Docker service running?)"
+  DOCKER=(sudo "$DOCKER_BIN")
+else
+  die "cannot reach Docker (is the Docker service running?)"
+fi
+docker() { "${DOCKER[@]}" "$@"; }
+
 # Read .env literally (no shell evaluation, so spaces, parens and | are safe).
 while IFS= read -r line || [ -n "$line" ]; do
   [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
@@ -192,7 +205,10 @@ cmd_up() {
       "$PROXY_IMAGE" >/dev/null
     echo "Started $PROXY_NAME (HTTPS: $TLS_MODE) on ports ${HTTP_PORT}/${HTTPS_PORT}"
   else
-    echo "TLS_MODE=external: point your reverse proxy at ${BIND}:${PORT} (/erddap/) and ${BIND}:${API_PORT} (/api/)"
+    echo "TLS_MODE=external: point your reverse proxy (NPM/nginx) at port ${PORT} for /erddap and ${API_PORT} for /api"
+    if [ "$BIND" = "0.0.0.0" ]; then
+      echo "NOTE: ports ${PORT}/${API_PORT} listen on all interfaces; firewall them so only the proxy can connect." >&2
+    fi
   fi
   wait_healthy
 }
@@ -250,9 +266,9 @@ cmd_status() {
 
 cmd_logs() {
   case "${1:-erddap}" in
-    erddap) exec docker logs -f --tail 200 "$NAME" ;;
-    api)    exec docker logs -f --tail 200 "$API_NAME" ;;
-    proxy)  exec docker logs -f --tail 200 "$PROXY_NAME" ;;
+    erddap) exec "${DOCKER[@]}" logs -f --tail 200 "$NAME" ;;
+    api)    exec "${DOCKER[@]}" logs -f --tail 200 "$API_NAME" ;;
+    proxy)  exec "${DOCKER[@]}" logs -f --tail 200 "$PROXY_NAME" ;;
     *) die "usage: $0 logs [erddap|api|proxy]" ;;
   esac
 }

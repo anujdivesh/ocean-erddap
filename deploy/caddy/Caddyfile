@@ -17,6 +17,10 @@
 
 	@api path /api /api/*
 	handle @api {
+		# keep >= PUSH_MAX_UPLOAD_MB (+ a little multipart overhead)
+		request_body {
+			max_size 510MB
+		}
 		reverse_proxy {$API_UPSTREAM}
 	}
 

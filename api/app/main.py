@@ -16,6 +16,7 @@ will always see them. After any change the dataset's reload flag is set.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import os
@@ -23,6 +24,7 @@ import re
 import tempfile
 import time
 import xml.etree.ElementTree as ET
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -30,6 +32,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 CONTENT_DIR = Path(os.environ.get("ERDDAP_CONTENT_DIR", "/erddap_content"))
 DATASETS_ROOT = Path(os.environ.get("DATASETS_ROOT", "/datasets")).resolve()
@@ -37,6 +40,11 @@ FLAG_DIR = Path(os.environ.get("ERDDAP_FLAG_DIR", "/erddapData/flag"))
 ADMIN_ROLES = {r.strip() for r in os.environ.get("PUSH_ADMIN_ROLES", "spc").split(",") if r.strip()}
 MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "500")) * 1024 * 1024
 SAFE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$")
+# Failed logins allowed per client IP within the window before it gets 429 responses.
+LOGIN_FAIL_LIMIT = int(os.environ.get("LOGIN_FAIL_LIMIT", "10"))
+LOGIN_FAIL_WINDOW_S = int(os.environ.get("LOGIN_FAIL_WINDOW_S", "900"))
+UPLOAD_PATH = re.compile(r"^/api/datasets/[^/]+/files/?$")
+MULTIPART_OVERHEAD = 1024 * 1024  # headers/boundaries around the file in a multipart body
 
 app = FastAPI(
     title="ERDDAP Push API",
@@ -135,18 +143,82 @@ def _hash_password(encoding: str, username: str, password: str) -> str:
 # --------------------------------------------------------------------------- #
 # Auth
 # --------------------------------------------------------------------------- #
-def current_user(creds: HTTPBasicCredentials = Depends(security)) -> User:
+_failures: dict[str, deque[float]] = {}
+
+
+def _recent_failures(ip: str, now: float) -> deque[float]:
+    q = _failures.setdefault(ip, deque())
+    while q and now - q[0] > LOGIN_FAIL_WINDOW_S:
+        q.popleft()
+    return q
+
+
+def _prune_failures(now: float) -> None:
+    if len(_failures) > 10_000:
+        for ip in [ip for ip, q in _failures.items() if not q or now - q[-1] > LOGIN_FAIL_WINDOW_S]:
+            del _failures[ip]
+
+
+async def verify_credentials(request: Request, creds: HTTPBasicCredentials) -> User:
+    """Check Basic credentials against ERDDAP's users, with per-IP brute-force limiting.
+    Async so the anti-guessing delay does not tie up a worker thread."""
+    ip = request.client.host if request.client else "unknown"
+    now = time.monotonic()
+    failures = _recent_failures(ip, now)
+    if len(failures) >= LOGIN_FAIL_LIMIT:
+        retry = int(LOGIN_FAIL_WINDOW_S - (now - failures[0])) + 1
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Too many failed logins; try again later",
+            headers={"Retry-After": str(retry)},
+        )
     users, _, encoding = erddap_config()
     user = users.get(creds.username)
     candidate = _hash_password(encoding, creds.username, creds.password)
     if user is None or not user.password_hash or not hmac.compare_digest(candidate, user.password_hash):
-        time.sleep(1)  # slow down password guessing
+        failures.append(now)
+        _prune_failures(now)
+        await asyncio.sleep(1)  # slow down password guessing
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
             "Invalid username or password",
             headers={"WWW-Authenticate": 'Basic realm="ERDDAP Push API"'},
         )
     return user
+
+
+async def current_user(request: Request, creds: HTTPBasicCredentials = Depends(security)) -> User:
+    return await verify_credentials(request, creds)
+
+
+class UploadGuard:
+    """Rejects oversized or unauthenticated uploads BEFORE the body is read.
+
+    FastAPI parses (and spools to disk) a multipart body before it runs dependencies,
+    so without this anyone could send huge uploads with no password."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope["method"] == "POST" and UPLOAD_PATH.match(scope["path"]):
+            request = Request(scope)
+            try:
+                length = request.headers.get("content-length")
+                if length is None or not length.isdigit():
+                    raise HTTPException(411, "Content-Length header required for uploads")
+                if int(length) > MAX_UPLOAD_BYTES + MULTIPART_OVERHEAD:
+                    raise HTTPException(413, f"File larger than {MAX_UPLOAD_BYTES // 1024 // 1024} MB")
+                creds = await security(request)  # raises 401 if no Basic credentials
+                await verify_credentials(request, creds)
+            except HTTPException as e:
+                response = JSONResponse({"detail": e.detail}, status_code=e.status_code, headers=e.headers)
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(UploadGuard)
 
 
 def can_push(user: User, dataset_id: str) -> bool:
@@ -296,10 +368,13 @@ def api_documentation(request: Request):
         "errors": {
             "400": "Invalid request: bad file name, name not matching fileNameRegex, or empty file",
             "401": "Missing or wrong username/password",
+            "411": "Upload sent without a Content-Length header",
             "403": "Logged in, but not allowed to push to this dataset",
             "404": "Unknown dataset or file",
             "409": "File already exists (add ?overwrite=true)",
             "413": "File too large",
+            "429": f"Too many failed logins from your address ({LOGIN_FAIL_LIMIT} per "
+                   f"{LOGIN_FAIL_WINDOW_S // 60} min); wait and retry",
         },
     }
     return JSONResponse(doc, media_type="application/json")

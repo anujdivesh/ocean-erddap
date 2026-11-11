@@ -1,0 +1,27 @@
+repos:
+
+- repo: https://github.com/codespell-project/codespell
+  rev: v2.4.3
+  hooks:
+    - id: codespell
+      exclude: >
+          (?x)^(
+              .*\.yaml
+          )$
+      args:
+        - --ignore-words-list=pres
+
+- repo: https://github.com/woodruffw/zizmor-pre-commit
+  rev: v1.31.1
+  hooks:
+    - id: zizmor
+
+ci:
+    autofix_commit_msg: |
+        [pre-commit.ci] auto fixes from pre-commit.com hooks
+
+        for more information, see https://pre-commit.ci
+    autofix_prs: false
+    autoupdate_commit_msg: '[pre-commit.ci] pre-commit autoupdate'
+    skip: []
+    submodules: false

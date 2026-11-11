@@ -1,0 +1,58 @@
+name: Check NC <->C DL
+
+# no permissions by default
+permissions: {}
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+
+    - name: Setup Micromamba Python
+      uses: mamba-org/setup-micromamba@f457c30a868e4760d3a6fcea5f25dc655b8edf39  # v3.2.1
+      with:
+        environment-name: GHA
+        init-shell: bash
+        create-args: >-
+          python=3 netcdf4 --channel conda-forge
+
+    - name: Convert NC files to CDL and back
+      shell: bash -l {0}
+      run: |
+        python convert_nc_cdl.py
+
+    - name: Get current date
+      run: echo "NOW=$(date -u)" >> ${GITHUB_ENV}
+
+    - name: Create Pull Request
+      if: github.ref == 'refs/heads/main'
+      id: cpr
+      uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1  # v8.1.1
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        commit-message: "Latest data: ${{ env.NOW }}"
+        branch: update-gold-standard-files
+        delete-branch: true
+        title: "[file-conversion-ci] update gold standard file"
+        body: |
+          Update gold-standard files.
+        labels: |
+          Bot
+
+    - name: Check outputs
+      if: ${{ steps.cpr.outputs.pull-request-number }}
+      run: |
+        echo "Sending Pull Request"

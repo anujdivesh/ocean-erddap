@@ -1,0 +1,23 @@
+# Local front door (used by docker_run.sh). Both ports route the same way:
+#   /api/*  -> Push API (FastAPI)
+#   /*      -> ERDDAP
+#   http://localhost:8080   plain HTTP (local only; ERDDAP logins need HTTPS)
+#   https://localhost:8443  HTTPS with a self-signed cert
+(routes) {
+	@api path /api /api/*
+	handle @api {
+		reverse_proxy erddap_push_api:8000
+	}
+	handle {
+		reverse_proxy erddap_gold_standard:8080
+	}
+}
+
+http://:8080 {
+	import routes
+}
+
+https://localhost:8443 {
+	tls internal
+	import routes
+}

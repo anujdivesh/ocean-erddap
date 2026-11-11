@@ -1,0 +1,57 @@
+# =============================================================================
+# Secrets & local settings
+# =============================================================================
+# The single config file holds secrets; only the template is committed.
+.env
+.env.*
+!.env.template
+.envrc
+# TLS material, if ever placed in the repo
+*.pem
+*.key
+*.crt
+*.p12
+
+# =============================================================================
+# Data & ERDDAP runtime
+# =============================================================================
+# ERDDAP cache, indexes, flags and logs (regenerated at startup)
+erddap/data/
+# Observational data: backed up separately, not versioned (keep the folder)
+datasets/*
+!datasets/.gitkeep
+# Local non-Docker runtime: Java, Tomcat, ERDDAP, venv (deploy/local.sh)
+deploy/.local/
+
+# =============================================================================
+# Logs, backups, temp
+# =============================================================================
+logs/
+*.log
+*.pid
+*.bak
+*.tmp
+*.swp
+erddap_*.tar.gz
+.prodtest_tmp/
+
+# =============================================================================
+# Python (Push API)
+# =============================================================================
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# =============================================================================
+# Editors / OS
+# =============================================================================
+.idea/
+*.iml
+.project
+.vscode/
+.DS_Store
+Thumbs.db

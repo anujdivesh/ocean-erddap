@@ -1,0 +1,33 @@
+# Production HTTPS front door (used by deploy/prod.sh when TLS_MODE != external).
+# Values come from environment variables set by deploy/prod.sh from .env:
+#   DOMAIN          e.g. erddap.spc.int
+#   CADDY_TLS       ACME email (Let's Encrypt) | "/certs/cert.pem /certs/key.pem" | "internal"
+#   ERDDAP_UPSTREAM e.g. erddap:8080
+#   API_UPSTREAM    e.g. erddap_push_api:8000
+#
+#   https://DOMAIN/erddap/...  -> ERDDAP
+#   https://DOMAIN/api/...     -> Push API
+#   https://DOMAIN/            -> redirect to /erddap/
+#   http://DOMAIN/...          -> redirect to https (automatic)
+
+{$DOMAIN} {
+	tls {$CADDY_TLS}
+
+	header Strict-Transport-Security "max-age=31536000"
+
+	@api path /api /api/*
+	handle @api {
+		reverse_proxy {$API_UPSTREAM}
+	}
+
+	handle /erddap* {
+		reverse_proxy {$ERDDAP_UPSTREAM} {
+			# stream large downloads instead of buffering them
+			flush_interval -1
+		}
+	}
+
+	handle {
+		redir * /erddap/ 302
+	}
+}

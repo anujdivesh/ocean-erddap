@@ -24,15 +24,16 @@ Local scripts reuse `.env` and only override URLs, ports, memory and email for l
 1. On the server: Docker installed, repo checked out (or pushed with `deploy/push.sh code`).
 2. `.env`: set `DOMAIN` (e.g. `erddap.spc.int`), `TLS_MODE`, and every `CHANGE_ME`.
 3. `sudo chown -R 1000:1000 datasets/` (ERDDAP and the Push API run as uid 1000).
+   Docker access: the script uses `sudo docker` automatically if your user isn't in the `docker` group.
 4. `deploy/prod.sh up`
 
 HTTPS (`TLS_MODE` in `.env`):
 
 | Mode | What happens | Requirements |
 |---|---|---|
-| `auto` (default) | A Caddy container gets and renews a Let's Encrypt certificate for `DOMAIN` | DNS for `DOMAIN` points at the server; ports 80 + 443 open to the internet |
+| `auto` | A Caddy container gets and renews a Let's Encrypt certificate for `DOMAIN` | DNS for `DOMAIN` points at the server; ports 80 + 443 open to the internet |
 | `certfiles` | Caddy serves your certificate | `TLS_CERT_FILE` (full chain) and `TLS_KEY_FILE` paths on the server |
-| `external` | No Caddy; the main nginx terminates HTTPS | Use `deploy/nginx/erddap.spc.int.conf` |
+| `external` (SPC setup) | No Caddy; Nginx Proxy Manager / nginx terminates HTTPS | Proxy `/erddap` to port 8080 and `/api` to 8000; see `deploy/nginx/erddap.spc.int.conf` |
 | `internal` | Self-signed certificate | Testing only |
 
 Public URLs: `https://DOMAIN/erddap/` (ERDDAP), `https://DOMAIN/api/` (Push API),
